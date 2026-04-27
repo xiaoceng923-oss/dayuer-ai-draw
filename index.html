@@ -1294,7 +1294,8 @@
           const payload = {
             model: model,
             prompt: prompt,
-            aspectRatio: ui.ratio.value // 1:1, 16:9, 3:2 etc.
+            aspectRatio: ui.ratio.value, // 1:1, 16:9, 3:2 etc.
+            webHook: "-1" // 强制接口立即返回任务id用于轮询
           };
 
           // 如果有参考图，上传到图床获取URL，或者由于这里不支持直接传文件，我们转为base64？
@@ -1449,14 +1450,14 @@
           } else {
             const lastData = rawResponseDebug[rawResponseDebug.length - 1] || {};
             // 判断是否返回了包含id的数据结构（需要轮询获取结果）
-            const pollingId = lastData.id || lastData.task_id || (lastData.data && typeof lastData.data === 'string' && !lastData.data.startsWith('http') ? lastData.data : null);
+            const pollingId = lastData.id || lastData.task_id || (lastData.data && lastData.data.id) || (lastData.data && typeof lastData.data === 'string' && !lastData.data.startsWith('http') ? lastData.data : null);
             
             if (pollingId) {
               msg(`任务已提交 (ID: ${pollingId})，正在等待绘制完成...`, false);
               
               // 启动轮询机制
               let pollCount = 0;
-              const maxPolls = 60; // 最多轮询60次 (约1-2分钟)
+              const maxPolls = 150; // 最多轮询150次 (约5分钟)
               const pollInterval = 2000; // 每2秒轮询一次
               
               const pollTimer = setInterval(async () => {
@@ -1479,38 +1480,43 @@
                      throw new Error(pollData.msg || 'API Error');
                   }
                   
-                  // 根据常见的中转API格式，实际数据可能包裹在 data 中
+                  // 根据文档格式，实际数据可能包裹在 data 中
                   const targetData = pollData.data || pollData;
                   
-                  // 尝试提取进度或状态
+                  // 提取进度和状态
                   const progress = targetData.progress || pollData.progress;
                   const status = targetData.status || pollData.status;
                   
-                  if (progress && status !== 'SUCCESS') {
-                    msg(`正在绘制... 进度: ${progress}`);
+                  if (progress !== undefined && status !== 'SUCCESS' && status !== 'succeeded') {
+                    msg(`正在绘制... 进度: ${progress}%`);
                   }
                   
-                  // 寻找最终图片URL (多兼容处理)
-                  let imgUrl = targetData.imageUrl || targetData.url || targetData.image_url;
-                  if (!imgUrl && typeof targetData === 'string' && targetData.startsWith('http')) {
-                    imgUrl = targetData;
-                  } else if (!imgUrl && Array.isArray(targetData) && targetData[0]) {
-                    imgUrl = targetData[0].url || targetData[0].imageUrl || (targetData[0].b64_json ? `data:image/png;base64,${targetData[0].b64_json}` : null);
-                  }
-                  if (!imgUrl && typeof pollData.result === 'string' && pollData.result.startsWith('http')) {
-                    imgUrl = pollData.result;
+                  // 寻找最终图片URL (严格按照文档结构，并兼顾其他可能格式)
+                  let imgUrl = null;
+                  if (targetData.results && targetData.results[0] && targetData.results[0].url) {
+                    imgUrl = targetData.results[0].url;
+                  } else {
+                    imgUrl = targetData.imageUrl || targetData.url || targetData.image_url;
+                    if (!imgUrl && typeof targetData === 'string' && targetData.startsWith('http')) {
+                      imgUrl = targetData;
+                    } else if (!imgUrl && Array.isArray(targetData) && targetData[0]) {
+                      imgUrl = targetData[0].url || targetData[0].imageUrl || (targetData[0].b64_json ? `data:image/png;base64,${targetData[0].b64_json}` : null);
+                    }
+                    if (!imgUrl && typeof pollData.result === 'string' && pollData.result.startsWith('http')) {
+                      imgUrl = pollData.result;
+                    }
                   }
                   
                   // 检查任务是否失败
-                  if (status === 'FAILED' || status === 'FAILURE') {
+                  if (status === 'FAILED' || status === 'FAILURE' || status === 'failed') {
                     clearInterval(pollTimer);
                     addHistoryItem(taskId, 'failed', [], prompt);
-                    msg(`绘制失败: ${targetData.failReason || targetData.msg || pollData.msg || '未知错误'}`, true);
+                    msg(`绘制失败: ${targetData.failure_reason || targetData.error || targetData.failReason || targetData.msg || pollData.msg || '未知错误'}`, true);
                     setLoading(false);
                     return;
                   }
 
-                  if (status === 'SUCCESS' || imgUrl) {
+                  if (status === 'SUCCESS' || status === 'succeeded' || imgUrl) {
                     if (imgUrl) {
                       clearInterval(pollTimer);
                       msg('创作完成');
