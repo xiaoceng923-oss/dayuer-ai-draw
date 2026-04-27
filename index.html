@@ -1447,24 +1447,98 @@
             addHistoryItem(taskId, 'completed', urls, prompt);
             addGalleryGroup(urls, prompt);
           } else {
-            addHistoryItem(taskId, 'failed', [], prompt);
-            const debugStr = rawResponseDebug.length > 0 ? JSON.stringify(rawResponseDebug[rawResponseDebug.length - 1]) : '空';
-            console.log("API 未返回图片，完整响应:", rawResponseDebug);
+            const lastData = rawResponseDebug[rawResponseDebug.length - 1] || {};
+            // 判断是否返回了包含id的数据结构（需要轮询获取结果）
+            const pollingId = lastData.id || lastData.task_id || (lastData.data && typeof lastData.data === 'string' && !lastData.data.startsWith('http') ? lastData.data : null);
             
-            // 尝试判断是否是返回了任务ID需要轮询
-            const lastData = rawResponseDebug[rawResponseDebug.length - 1];
-            if (lastData && lastData.code === 1 && lastData.data && typeof lastData.data === 'string' && !lastData.data.startsWith('http')) {
-               msg(`提交成功，任务ID: ${lastData.data} (暂未实现轮询获取结果)`, true);
+            if (pollingId) {
+              msg(`任务已提交 (ID: ${pollingId})，正在等待绘制完成...`, false);
+              
+              // 启动轮询机制
+              let pollCount = 0;
+              const maxPolls = 60; // 最多轮询60次 (约1-2分钟)
+              const pollInterval = 2000; // 每2秒轮询一次
+              
+              const pollTimer = setInterval(async () => {
+                pollCount++;
+                try {
+                  const pollRes = await fetch('https://grsai.dakka.com.cn/v1/draw/result', {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': 'Bearer ' + key,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ id: pollingId })
+                  });
+                  
+                  if (!pollRes.ok) throw new Error(`HTTP ${pollRes.status}`);
+                  
+                  const pollData = await pollRes.json();
+                  if (pollData.code && pollData.code < 0) {
+                     clearInterval(pollTimer);
+                     throw new Error(pollData.msg || 'API Error');
+                  }
+                  
+                  // 尝试提取进度或状态
+                  if (pollData.progress) {
+                    msg(`正在绘制... 进度: ${pollData.progress}`);
+                  }
+                  
+                  // 寻找最终图片URL
+                  let imgUrl = pollData.imageUrl || pollData.url;
+                  if (!imgUrl && pollData.data) {
+                    if (typeof pollData.data === 'string' && pollData.data.startsWith('http')) imgUrl = pollData.data;
+                    else if (pollData.data.url) imgUrl = pollData.data.url;
+                    else if (Array.isArray(pollData.data) && pollData.data[0]) imgUrl = pollData.data[0].url || (pollData.data[0].b64_json ? `data:image/png;base64,${pollData.data[0].b64_json}` : null);
+                  }
+                  if (!imgUrl && typeof pollData.result === 'string' && pollData.result.startsWith('http')) imgUrl = pollData.result;
+                  
+                  // 检查任务是否失败
+                  if (pollData.status === 'FAILED' || pollData.status === 'FAILURE') {
+                    clearInterval(pollTimer);
+                    addHistoryItem(taskId, 'failed', [], prompt);
+                    msg(`绘制失败: ${pollData.failReason || pollData.msg || '未知错误'}`, true);
+                    setLoading(false);
+                    return;
+                  }
+
+                  if (imgUrl) {
+                    clearInterval(pollTimer);
+                    msg('创作完成');
+                    addHistoryItem(taskId, 'completed', [imgUrl], prompt);
+                    addGalleryGroup([imgUrl], prompt);
+                    setLoading(false);
+                  } else if (pollCount >= maxPolls) {
+                    clearInterval(pollTimer);
+                    addHistoryItem(taskId, 'failed', [], prompt);
+                    msg('轮询超时，未能在规定时间内获取到图片', true);
+                    setLoading(false);
+                  }
+                } catch (err) {
+                  clearInterval(pollTimer);
+                  console.error('轮询错误:', err);
+                  addHistoryItem(taskId, 'failed', [], prompt);
+                  msg('轮询错误: ' + (err.message || '未知错误'), true);
+                  setLoading(false);
+                }
+              }, pollInterval);
+              
+              // 既然进入轮询，我们在当前作用域中不再立刻设置为false，让轮询函数内部控制
+              return; // 提前退出，避免执行外层的 finally { setLoading(false) }
             } else {
-               msg('未返回有效图片: ' + debugStr.substring(0, 100) + '...', true);
+              addHistoryItem(taskId, 'failed', [], prompt);
+              const debugStr = rawResponseDebug.length > 0 ? JSON.stringify(lastData) : '空';
+              console.log("API 未返回图片，完整响应:", rawResponseDebug);
+              msg('未返回有效图片: ' + debugStr.substring(0, 100) + '...', true);
             }
           }
 
+          // 如果没有被轮询拦截，则直接在这里关闭loading
+          setLoading(false);
         } catch (err) {
           console.error(err);
           addHistoryItem(taskId, 'failed', [], prompt);
           msg('错误: ' + (err.message || '未知错误'), true);
-        } finally {
           setLoading(false);
         }
       };
