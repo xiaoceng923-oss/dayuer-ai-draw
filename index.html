@@ -302,6 +302,51 @@
       cursor: not-allowed;
     }
 
+    .template-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .template-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--glass-border);
+      color: var(--text-main);
+      padding: 10px 8px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .template-btn:hover {
+      background: var(--accent);
+      color: #1a1a1a;
+      border-color: var(--accent);
+    }
+
+    .template-btn.active {
+      background: var(--accent);
+      color: #1a1a1a;
+      border-color: var(--accent);
+    }
+
+    .template-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      background: rgba(0, 0, 0, 0.2);
+      padding: 10px 12px;
+      border-radius: 8px;
+      line-height: 1.5;
+      display: none;
+    }
+
+    .template-hint.show {
+      display: block;
+    }
+
     .key-section {
       background: rgba(0, 0, 0, 0.2);
       padding: 12px;
@@ -829,6 +874,17 @@
         <textarea id="prompt" placeholder="输入图片描述，支持中英文"></textarea>
       </div>
 
+      <div>
+        <label>快捷模板</label>
+        <div class="template-grid">
+          <button class="template-btn" data-template="palm">🖐️ 手相</button>
+          <button class="template-btn" data-template="tarot">🔮 塔罗牌</button>
+          <button class="template-btn" data-template="avatar">👤 头像</button>
+          <button class="template-btn" data-template="card">🃏 卡片</button>
+        </div>
+        <div class="template-hint" id="templateHint"></div>
+      </div>
+
       <div class="inline-row">
         <label>模型</label>
         <select id="modelSelect">
@@ -982,7 +1038,8 @@
         historyList: el('historyList'),
         historyPrev: el('historyPrev'),
         historyNext: el('historyNext'),
-        historyPageInfo: el('historyPageInfo')
+        historyPageInfo: el('historyPageInfo'),
+        templateHint: el('templateHint')
       };
 
       let refImages = []; // 参考图数据 (base64)
@@ -990,6 +1047,61 @@
       let currentLbUrl = ''; // 当前大图URL
       let currentImgIndex = -1; // 当前大图在所有图片中的索引
       let viewingFromHistory = false; // 标记是否从历史记录查看大图
+
+      // ====== 模板配置 ======
+      const TEMPLATES = {
+        palm: {
+          prompt: `请仔细分析这张掌纹图片，包括：
+1. 生命线 - 分析长度、深度、连续性
+2. 感情线 - 分析形状、走势、有无分叉
+3. 事业线 - 分析中指下方线条
+4. 整体纹路 - 识别主要特征和特殊标记
+请给出详细的掌纹解读。`,
+          hint: `📱 手相分析使用说明：
+1. 上传清晰的掌纹照片（光线充足）
+2. 确保手掌完整入镜，手指自然伸展
+3. 建议上传左手和右手照片以获得更准确解读`
+        },
+        tarot: {
+          prompt: `请仔细解读这副塔罗牌阵，包括：
+1. 牌面识别 - 识别每张牌的名称和正逆位
+2. 位置含义 - 解释每张牌在其位置的意义
+3. 牌阵解读 - 分析牌与牌之间的关系
+4. 综合建议 - 给出整体指引和建议
+请给出详细的塔罗牌解读。`,
+          hint: `🔮 塔罗牌使用说明：
+1. 准备好想要解读的问题
+2. 上传清晰的塔罗牌照片
+3. 可以是单牌、三牌牌阵或完整牌阵
+4. 点击生成获取解读`
+        },
+        avatar: {
+          prompt: `请根据这张图片设计一个精美的头像，要求：
+1. 保留原图的主要特征
+2. 优化细节，提升视觉效果
+3. 适合作为社交媒体头像使用
+4. 风格要吸引人，有辨识度`,
+          hint: `👤 头像设计使用说明：
+1. 上传一张清晰的正面照片
+2. 建议使用光线充足、表情自然的照片
+3. 照片比例建议为1:1
+4. 点击生成获取专属头像`
+        },
+        card: {
+          prompt: `请根据这张素材设计一张精美的卡片，要求：
+1. 排版美观大方
+2. 色彩搭配和谐
+3. 主次分明，重点突出
+4. 整体风格统一，有设计感`,
+          hint: `🃏 卡片设计使用说明：
+1. 上传卡片所需的素材图片
+2. 可以是人物、风景、文字等素材
+3. 说明卡片用途（如邀请函、宣传卡等）
+4. 点击生成获取精美卡片`
+        }
+      };
+
+      let activeTemplate = null;
 
       // ====== 初始化：加载缓存 ======
       ui.key.value = localStorage.getItem(STORE_KEY) || '';
@@ -1050,6 +1162,38 @@
         ui.size.style.cursor = '';
       }
       updateSizeAvailability();
+
+      // ====== 快捷模板功能 ======
+      document.querySelectorAll('.template-btn').forEach(btn => {
+        btn.onclick = () => {
+          const templateKey = btn.dataset.template;
+          const template = TEMPLATES[templateKey];
+
+          if (!template) return;
+
+          // 切换激活状态
+          if (activeTemplate === templateKey) {
+            // 取消选中
+            btn.classList.remove('active');
+            activeTemplate = null;
+            ui.prompt.value = '';
+            ui.templateHint.classList.remove('show');
+            ui.templateHint.textContent = '';
+          } else {
+            // 选中新的模板
+            document.querySelectorAll('.template-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            activeTemplate = templateKey;
+
+            // 填充提示词
+            ui.prompt.value = template.prompt;
+
+            // 显示操作说明
+            ui.templateHint.innerHTML = template.hint.replace(/\n/g, '<br>');
+            ui.templateHint.classList.add('show');
+          }
+        };
+      });
 
       // ====== 交互逻辑：文件上传 ======
       ui.drop.onclick = () => ui.fileInput.click();
